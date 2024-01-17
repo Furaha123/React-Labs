@@ -106,7 +106,7 @@ const FoodList = ({ route }) => {
         </AppForm>
       </ReusableModal>
     </View>
-  );
+  ); 
 };
 
 export default FoodList;

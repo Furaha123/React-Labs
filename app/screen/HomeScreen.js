@@ -1,4 +1,6 @@
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useState, useRef } from "react";
+import * as Notifications from 'expo-notifications';
+import * as Device from 'expo-device';
 import {
   FlatList,
   StyleSheet,
@@ -16,15 +18,29 @@ import AppInput from "../components/forms/AppInput";
 import { AppFormField, SubmitButton } from "./AddFood";
 import AppForm from "../components/forms/AppForm";
 import ReusableModal from "../components/ReusableModel";
-import AsyncStorage from "@react-native-async-storage/async-storage";
-
 import * as SQLite from "expo-sqlite";
 import { useNavigation } from "@react-navigation/native";
 
 const db = SQLite.openDatabase("food.db");
 
+Notifications.setNotificationHandler({
+  handleNotification: async () => ({
+    shouldShowAlert: true,
+    shouldPlaySound: false,
+    shouldSetBadge: false,
+  }),
+});
 const HomeScreen = () => {
   const navigation = useNavigation();
+  const [selectedCategory, setSelectedCategory] = useState({});
+  const [isModalVisibleUpdate, setModalVisibleUpdate] = useState(false);
+  const [isModalVisible, setModalVisible] = useState(false);
+  const [newCategory, setNewCategory] = useState("");
+  const [categories, setCategories] = useState([]);
+  const [expoPushToken, setExpoPushToken] = useState('');
+  const [notification, setNotification] = useState(false);
+  const notificationListener = useRef();
+  const responseListener = useRef();
 
   const createTable = () => {
     db.transaction((tx) => {
@@ -47,13 +63,11 @@ const HomeScreen = () => {
       );
     });
   };
-  const [categories, setCategories] = useState([]);
-
 
   const getCategories = () => {
     db.transaction((tx) => {
       tx.executeSql("select * from categories;", [], (_, { rows }) => {
-        console.log(JSON.stringify(rows));
+        //console.log(JSON.stringify(rows));
         setCategories(rows._array);
       });
     });
@@ -61,64 +75,48 @@ const HomeScreen = () => {
 
   useEffect(() => {
     createTable();
-  }, []);
+    getCategories();
+    registerForPushNotificationsAsync().then(token => setExpoPushToken(token));
 
-  const [isModalVisible, setModalVisible] = useState(false);
-  const [newCategory, setNewCategory] = useState("");
+    notificationListener.current = Notifications.addNotificationReceivedListener(notification => {
+      setNotification(notification);
+    });
+
+    responseListener.current = Notifications.addNotificationResponseReceivedListener(response => {
+      console.log(response);
+    });
+
+    return () => {
+      Notifications.removeNotificationSubscription(notificationListener);
+      Notifications.removeNotificationSubscription(responseListener);
+    };
+
+
+  }, []);
 
   
   const toggleModal = () => {
     setModalVisible(!isModalVisible);
   };
   const handleAddCategory = async (values) => {
-    // const category = {
-    //   id: Math.random().toString(),
-    //   title: values.title,
-    //   description: values.description,
-    //   icon: <MaterialCommunityIcons name="food" size={30} color={"blue"} />,
-    // };
-    // const newCategories = [...categories, category];
-    // setCategories(newCategories);
-    // await AsyncStorage.setItem("categories", JSON.stringify(newCategories));
-    // toggleModal();
     insertCategory(values.title, values.description);
     toggleModal();
     getCategories();
+    schedulePushNotification("New category added", values.description);
   };
 
-  // useEffect(() => {
-  //   const getCategories = async () => {
-  //     const data = await AsynhcStorage.getItem("categories");
-  //     if (data) {
-  //       setCategories(
-  //         JSON.parse(data).map((category) => ({
-  //           ...category,
-  //           icon: (
-  //             <MaterialCommunityIcons name="food" size={30} color={"blue"} />
-  //           ),
-  //         }))
-  //       );
-  //     }
-  //   };
-  //   getCategories();
-  // }, []);
-
   const handleDeleteCategory = async (id) => {
-    // const newCategories = categories.filter((category) => category.id !== id);
-    // setCategories(newCategories);
-    // await AsyncStorage.setItem("categories", JSON.stringify(newCategories));
     db.transaction((tx) => {
       tx.executeSql("delete from categories where id = ?;", [id]);
     });
     getCategories();
   };
-  const [isModalVisibleUpdate, setModalVisibleUpdate] = useState(false);
+  
 
   const toggleModalUpdate = () => {
     setModalVisibleUpdate(!isModalVisibleUpdate);
   };
 
-  const [selectedCategory, setSelectedCategory] = useState({});
 
   const handleSelect = (item) => {
     console.log(item);
@@ -127,17 +125,6 @@ const HomeScreen = () => {
   };
 
   const handleUpdateCategory = async (values) => {
-    // const newCategories = categories.map((category) =>
-    //   category.id === selectedCategory.id
-    //     ? {
-    //         ...category,
-    //         title: values.title,
-    //         description: values.description,
-    //       }
-    //     : category
-    // );
-    // setCategories(newCategories);
-    // await AsyncStorage.setItem("categories", JSON.stringify(newCategories));
     db.transaction((tx) => {
       tx.executeSql(
         "update categories set title = ?, description = ? where id = ?;",
@@ -145,11 +132,50 @@ const HomeScreen = () => {
       );
       getCategories();
     });
-
+    schedulePushNotification(values.title, values.description);
     toggleModalUpdate();
     getCategories();
   };
-
+  async function schedulePushNotification(title, description) {
+    await Notifications.scheduleNotificationAsync({
+      content: {
+        title: title,
+        body: description,
+        data: { data: 'goes here' },
+      },
+      trigger: { seconds: 2 },
+    });
+  }
+  async function registerForPushNotificationsAsync() {
+    let token;
+  
+    if (Platform.OS === 'android') {
+      await Notifications.setNotificationChannelAsync('default', {
+        name: 'default',
+        importance: Notifications.AndroidImportance.MAX,
+        vibrationPattern: [0, 250, 250, 250],
+        lightColor: '#FF231F7C',
+      });
+    }
+    if (Device.isDevice) {
+      const { status: existingStatus } = await Notifications.getPermissionsAsync();
+      let finalStatus = existingStatus;
+      if (existingStatus !== 'granted') {
+        const { status } = await Notifications.requestPermissionsAsync();
+        finalStatus = status;
+      }
+      if (finalStatus !== 'granted') {
+        alert('Failed to get push token for push notification!');
+        return;
+      }
+      token = (await Notifications.getExpoPushTokenAsync()).data;
+      console.log(token);
+    } else {
+      alert('Must use physical device for Push Notifications');
+    }
+  
+    return token;
+  }
   return (
     <View style={styles.container}>
       <ReusableModal isModalVisible={isModalVisible} toggleModal={toggleModal}>
